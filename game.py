@@ -5,7 +5,14 @@ from tank    import Tank
 from terrain import Terrain
 from particle import Particle
 from ai      import create_ai
-from stats   import record_match, open_stats_window
+from stats import StatsManager, StatsGUI
+
+
+def run_stats_gui():
+    """Helper to launch the stats window in an independent process."""
+    manager = StatsManager()
+    gui = StatsGUI(manager)
+    gui.open_window()
 
 
 _MODES = [
@@ -33,13 +40,23 @@ class Game:
         self.shell_menu_open = False
         self.shell_menu_button_rect = pygame.Rect(0, 0, 0, 0)
         self.shell_menu_item_rects = []
+        
+        # --- INIT STATS MANAGER ---
+        self.stats_manager = StatsManager()
 
-        self.ai_controller = None
-        self.ai_difficulty = None
+        self.cheat_sequence = []
+        self.auto_loop_ai = None
+        self.game_over_timer = 0.0
+
+        self.ai_controllers = [None, None]
+        self.ai_difficulties = [None, None]
         self.ai_turn_active = False
 
         self._mode_button_rects = []
         self._build_mode_buttons()
+        
+        self._ai_button_rects = []
+        self._build_ai_menu_buttons()
 
         self._stats_button_rect = pygame.Rect(
             SCREEN_WIDTH // 2 - 100,
@@ -49,6 +66,7 @@ class Game:
 
         self._shell_damage_log = {}
         self._turn_start_time  = 0.0
+        self._stats_saved = False
 
         self._setup_players()
 
@@ -64,11 +82,23 @@ class Game:
             rect = pygame.Rect(start_x + i * (btn_w + gap), btn_y, btn_w, btn_h)
             self._mode_button_rects.append((label, diff, rect))
 
+    def _build_ai_menu_buttons(self):
+        btn_w, btn_h = 240, 56
+        gap          = 20
+        modes = [("Easy", "easy"), ("Medium", "medium"), ("Hard", "hard")]
+        total_w      = len(modes) * btn_w + (len(modes) - 1) * gap
+        start_x      = SCREEN_WIDTH  // 2 - total_w // 2
+        btn_y        = SCREEN_HEIGHT // 2 + 20
+
+        self._ai_button_rects = []
+        for i, (label, diff) in enumerate(modes):
+            rect = pygame.Rect(start_x + i * (btn_w + gap), btn_y, btn_w, btn_h)
+            self._ai_button_rects.append((label, diff, rect))
+
     def _random_wind(self):
         return random.uniform(-WIND_MAX, WIND_MAX)
 
     def reset(self):
-        self._save_stats()
         self.terrain    = Terrain()
         self.wind       = self._random_wind()
         self.rounds     = 0
@@ -79,11 +109,19 @@ class Game:
         self.particles     = []
         self.shell_menu_open = False
         self.shell_menu_item_rects = []
-        self.ai_controller  = None
-        self.ai_difficulty  = None
+        
+        self.ai_controllers  = [None, None]
+        self.ai_difficulties = [None, None]
         self.ai_turn_active = False
+        self.auto_loop_ai = None
+        self.game_over_timer = 0.0
+        self.end_reason = None
+
         self._shell_damage_log = {}
         self._turn_start_time  = 0.0
+        self._stats_saved = False
+        self.cheat_sequence = []
+        
         self._setup_players()
 
     def _setup_players(self):
@@ -111,8 +149,9 @@ class Game:
             self._refuel_tanks()
             self.wind = self._random_wind()
 
-        if self.ai_controller and self.current_turn_index == 1:
-            self.ai_controller.reset()
+        ai_controller = self.ai_controllers[self.current_turn_index]
+        if ai_controller:
+            ai_controller.reset()
             self.ai_turn_active = True
         else:
             self.ai_turn_active = False
@@ -151,11 +190,15 @@ class Game:
                 )
 
     def _save_stats(self):
+        if getattr(self, "_stats_saved", False):
+            return
         if self.game_state not in ("playing", "game_over"):
             return
         if all(t._shots_fired == 0 for t in self.player_list):
             return
-        record_match(self.player_list, self.matchduration, self._shell_damage_log)
+
+        self.stats_manager.record_match(self.player_list, self.matchduration, self._shell_damage_log)
+        self._stats_saved = True
 
     def run(self):
         while True:
@@ -165,7 +208,8 @@ class Game:
 
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
-                    self._save_stats()
+                    if self.game_state == "game_over":
+                        self._save_stats()
                     self.quit_game()
                 self._handle_input(event)
 
@@ -173,6 +217,27 @@ class Game:
             self.draw()
 
     def _handle_input(self, event):
+        # Catch the hidden cheat code to activate AI vs AI
+        if event.type == pygame.KEYDOWN:
+            if event.key in [pygame.K_UP, pygame.K_RIGHT, pygame.K_DOWN]:
+                self.cheat_sequence.append(event.key)
+                if len(self.cheat_sequence) > 5:
+                    self.cheat_sequence.pop(0)
+
+                target_seq = [pygame.K_UP, pygame.K_RIGHT, pygame.K_DOWN, pygame.K_DOWN, pygame.K_DOWN]
+                if self.game_state == "main_menu" and self.cheat_sequence == target_seq:
+                    self.game_state = "ai_menu"
+                    self.cheat_sequence = []
+                    return
+
+        # General Restart Button Handling (Acts as 'Back' outside main menu)
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            if self.game_state in ("playing", "game_over", "ai_menu"):
+                if self.restart_button_rect.collidepoint(event.pos):
+                    self.reset()
+                    return
+
+        # Main Menu Controls
         if self.game_state == "main_menu":
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 for label, diff, rect in self._mode_button_rects:
@@ -180,24 +245,24 @@ class Game:
                         self._start_game(diff)
                         return
                 if self._stats_button_rect.collidepoint(event.pos):
-                    # Start the stats window in an independent process
-                    p = multiprocessing.Process(target=open_stats_window)
+                    # --- OOP UPDATE HERE ---
+                    # Start the stats window using the new helper function
+                    p = multiprocessing.Process(target=run_stats_gui)
                     p.daemon = True
                     p.start()
                     return
 
-        if self.game_state == "game_over":
+        # AI vs AI Menu Controls
+        elif self.game_state == "ai_menu":
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                if self.restart_button_rect.collidepoint(event.pos):
-                    self.reset()
-            return
+                for label, diff, rect in self._ai_button_rects:
+                    if rect.collidepoint(event.pos):
+                        self._start_ai_vs_ai(diff)
+                        return
 
-        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-            if self.restart_button_rect.collidepoint(event.pos):
-                self.reset()
-                return
-
-            if self.game_state == "playing" and not self.ai_turn_active:
+        # In-Game Controls
+        elif self.game_state == "playing" and not self.ai_turn_active:
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 if self.shell_menu_button_rect.collidepoint(event.pos):
                     self.shell_menu_open = not self.shell_menu_open
                     return
@@ -207,25 +272,36 @@ class Game:
                         return
                     self.shell_menu_open = False
 
-        if event.type == pygame.KEYDOWN:
-            if (event.key == pygame.K_SPACE
-                    and not self.active_shells
-                    and not self.ai_turn_active):
-                new_shells = self.current_tank.shoot()
-                self.active_shells.extend(new_shells)
-                self.next_turn()
+            if event.type == pygame.KEYDOWN:
+                if (event.key == pygame.K_SPACE
+                        and not self.active_shells):
+                    new_shells = self.current_tank.shoot()
+                    self.active_shells.extend(new_shells)
+                    self.next_turn()
 
     def _start_game(self, difficulty):
-        self.ai_difficulty = difficulty
+        self.ai_difficulties = [None, difficulty]
+        self.ai_controllers = [None, None]
         if difficulty is not None:
-            self.ai_controller = create_ai(difficulty)
-            self.ai_turn_active = False
-        else:
-            self.ai_controller  = None
-            self.ai_turn_active = False
+            self.ai_controllers[1] = create_ai(difficulty)
+        self.ai_turn_active = False
         self._shell_damage_log = {}
         self._turn_start_time  = self.matchduration
+        self._stats_saved = False
         self.game_state = "playing"
+
+    def _start_ai_vs_ai(self, difficulty):
+        self.auto_loop_ai = difficulty
+        self.ai_difficulties = [difficulty, difficulty]
+        self.ai_controllers = [create_ai(difficulty), create_ai(difficulty)]
+        self._shell_damage_log = {}
+        self._turn_start_time = self.matchduration
+        self._stats_saved = False
+        self.game_state = "playing"
+        
+        # Manually kick off the first AI's turn
+        self.ai_turn_active = True
+        self.ai_controllers[0].reset()
 
     def _handle_held_keys(self, dt):
         if self.active_shells or self.ai_turn_active:
@@ -251,15 +327,16 @@ class Game:
         if not self.ai_turn_active or self.active_shells:
             return
 
-        ai_tank    = self.player_list[1]
-        human_tank = self.player_list[0]
+        ai_tank = self.current_tank
+        enemy_tank = self.player_list[(self.current_turn_index + 1) % len(self.player_list)]
+        ai_controller = self.ai_controllers[self.current_turn_index]
 
-        if not ai_tank.is_alive:
+        if not ai_tank.is_alive or not ai_controller:
             self.ai_turn_active = False
             return
 
-        done = self.ai_controller.update(
-            ai_tank, human_tank, self.terrain, self.wind, dt
+        done = ai_controller.update(
+            ai_tank, enemy_tank, self.terrain, self.wind, dt
         )
         if done:
             new_shells = ai_tank.shoot()
@@ -268,6 +345,21 @@ class Game:
             self.next_turn()
 
     def update(self, dt):
+        # Handle auto-loop timer logic during game_over
+        if self.game_state == "game_over":
+            if self.auto_loop_ai:
+                self.game_over_timer += dt
+                if self.game_over_timer > 1.5:  # 1.5 second delay before restarting
+                    diff = self.auto_loop_ai
+                    self.reset()
+                    self._start_ai_vs_ai(diff)
+            
+            # Still update particles so explosions fade
+            for p in self.particles:
+                p.update()
+            self.particles = [p for p in self.particles if not p.is_dead]
+            return
+
         if self.game_state != "playing":
             return
 
@@ -296,6 +388,14 @@ class Game:
         if len(alive) == 1:
             self._save_stats()
             self.game_state = "game_over"
+            self.game_over_timer = 0.0
+            self.end_reason = "win" if len(alive) == 1 else "draw"
+
+        elif self.rounds >= 50:
+            self._save_stats()
+            self.game_state = "game_over"
+            self.game_over_timer = 0.0
+            self.end_reason = "draw" # Reached the 50 round limit
 
         for p in self.particles:
             p.update()
@@ -306,6 +406,9 @@ class Game:
 
         if self.game_state == "main_menu":
             self._draw_main_menu()
+            
+        elif self.game_state == "ai_menu":
+            self._draw_ai_menu()
 
         elif self.game_state in ("playing", "game_over"):
             self.terrain.draw(self.screen)
@@ -324,7 +427,8 @@ class Game:
 
         if self.game_state == "game_over":
             font = pygame.font.SysFont(None, 72)
-            txt  = font.render("GAME OVER", True, WHITE)
+            msg = "DRAW" if getattr(self, 'end_reason', None) == "draw" else "GAME OVER"
+            txt  = font.render(msg, True, WHITE)
             self.screen.blit(txt, (SCREEN_WIDTH//2 - txt.get_width()//2, 300))
 
         pygame.display.flip()
@@ -378,11 +482,35 @@ class Game:
         hints = [
             "Left / Right : Move    Up / Down : Aim angle    W / S : Power    SPACE : Fire",
             "Shell selector: click the shell button on your HUD panel",
+            "Activate Hell Bomb for automation",
         ]
         for i, h in enumerate(hints):
             ht = font_hint.render(h, True, (180, 200, 230))
             self.screen.blit(ht, (SCREEN_WIDTH//2 - ht.get_width()//2,
                                   SCREEN_HEIGHT - 80 + i * 28))
+
+    def _draw_ai_menu(self):
+        font_big = pygame.font.SysFont(None, 80)
+        title = font_big.render("AI vs AI Simulator", True, WHITE)
+        self.screen.blit(title, (SCREEN_WIDTH//2 - title.get_width()//2, 160))
+
+        font_sub = pygame.font.SysFont(None, 36)
+        sub = font_sub.render("Select AI difficulty matchup", True, (200, 220, 255))
+        self.screen.blit(sub, (SCREEN_WIDTH//2 - sub.get_width()//2, 255))
+
+        font_btn = pygame.font.SysFont(None, 38)
+        mouse_pos = pygame.mouse.get_pos()
+
+        for label, diff, rect in self._ai_button_rects:
+            base, hover = (100, 100, 100), (80, 80, 80)
+            col = hover if rect.collidepoint(mouse_pos) else base
+            pygame.draw.rect(self.screen, col,    rect, border_radius=10)
+            pygame.draw.rect(self.screen, WHITE,  rect, 2, border_radius=10)
+
+            txt = font_btn.render(label, True, WHITE)
+            self.screen.blit(txt, txt.get_rect(center=rect.center))
+
+        self._draw_restart_button()
 
     def _draw_aim_line(self, tank):
         if self.ai_turn_active:
@@ -412,8 +540,8 @@ class Game:
             self.screen.blit(panel_surf, (panel_x, panel_y))
             pygame.draw.rect(self.screen, BLACK, (panel_x, panel_y, panel_w, panel_h), 2)
 
-            if i == 1 and self.ai_difficulty:
-                label = f"AI ({self.ai_difficulty.capitalize()})"
+            if self.ai_difficulties[i]:
+                label = f"AI ({self.ai_difficulties[i].capitalize()})"
             else:
                 label = f"Player {tank.player_id}"
             title_txt = font.render(label, True, WHITE)
@@ -458,14 +586,21 @@ class Game:
                 self.screen.blit(shell_txt, (panel_x + 10, panel_y + 100 + (28 * 2)))
 
         if self.ai_turn_active:
-            turn_label = f"AI ({self.ai_difficulty.capitalize()}) is thinking…"
+            diff = self.ai_difficulties[self.current_turn_index]
+            if diff:
+                turn_label = f"AI ({diff.capitalize()}) is thinking…"
+            else:
+                turn_label = "AI is thinking..."
         else:
             turn_label = f"Player {self.current_tank.player_id}'s Turn"
+            
         turn_txt    = font.render(turn_label, True, WHITE)
         wind_symbol = "<-" if self.wind < 0 else "->" if self.wind > 0 else "--"
         wind_txt    = font.render(f"Wind {wind_symbol} {abs(self.wind):.1f}", True, WHITE)
+        current_round = font.render(f"Current round: {self.rounds}", True, WHITE)
         self.screen.blit(turn_txt, (SCREEN_WIDTH//2 - turn_txt.get_width()//2, 10))
         self.screen.blit(wind_txt, (SCREEN_WIDTH//2 - wind_txt.get_width()//2, 40))
+        self.screen.blit(current_round, (SCREEN_WIDTH//2 - current_round.get_width()//2, 70))
 
     def _handle_shell_menu_click(self, pos):
         for shell_name, rect in self.shell_menu_item_rects:
@@ -479,10 +614,10 @@ class Game:
 
     def _draw_shell_menu(self, font):
         shell_names = list(self.current_tank.shell_list.keys())
-        rows    = min(3, len(shell_names))
+        rows    = min(4, len(shell_names))
         columns = max(1, (len(shell_names) + rows - 1) // rows)
 
-        item_w = 140
+        item_w = 185
         item_h = 28
         gap    = 8
         menu_width  = columns * item_w + (columns + 1) * gap
@@ -522,7 +657,7 @@ class Game:
         font = pygame.font.SysFont(None, 28)
         pygame.draw.rect(self.screen, RED,  self.restart_button_rect)
         pygame.draw.rect(self.screen, GRAY, self.restart_button_rect, 2)
-        txt = font.render("Restart", True, WHITE)
+        txt = font.render("Restart" if self.game_state != "ai_menu" else "Back", True, WHITE)
         txt_pos = txt.get_rect(center=self.restart_button_rect.center)
         self.screen.blit(txt, txt_pos)
 

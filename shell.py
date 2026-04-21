@@ -49,8 +49,40 @@ class Shell:
             trail_point[1] += dt
         self.trail = [p for p in self.trail if p[1] <= self.trail_duration]
 
+    def _get_surface_normal(self, terrain, cx, cy, sample_radius=4):
+        """
+        Samples the terrain mask around the impact point to find the surface gradient.
+        Returns a normalized Vector2 pointing perpendicular (away) from the surface.
+        """
+        nx = 0
+        ny = 0
+        w, h = terrain.mask.get_size()
+        
+        # Sample points in a grid around the impact point
+        for dx in range(-sample_radius, sample_radius + 1):
+            for dy in range(-sample_radius, sample_radius + 1):
+                x = int(cx + dx)
+                y = int(cy + dy)
+                
+                # Check bounds
+                if 0 <= x < w and 0 <= y < h:
+                    # If the pixel is solid ground, push the normal away from it
+                    if terrain.mask.get_at((x, y)):
+                        nx -= dx
+                        ny -= dy
+                        
+        normal = pygame.Vector2(nx, ny)
+        
+        # Fallback if somehow hit a perfectly isolated pixel or flat ground
+        if normal.length_squared() == 0:
+            return pygame.Vector2(0, -1) # Default straight up
+            
+        return normal.normalize()
+
     def _bounce_off_terrain(self, terrain):
         self.pos = pygame.Vector2(self.prev_pos)
+        
+        # Back out of the collision slightly so we aren't stuck inside the mask
         if self.velocity.length_squared() > 0.0001:
             step = self.velocity.normalize() * 1
             for _ in range(20):
@@ -61,8 +93,17 @@ class Shell:
                 if not terrain.mask.get_at((x, y)):
                     break
                 self.pos -= step
-        self.velocity.y = -abs(self.velocity.y) * 0.7
-        self.velocity.x *= 0.9
+
+        # Get the angle (normal) of the sloped ground
+        normal = self._get_surface_normal(terrain, self.pos.x, self.pos.y, sample_radius=4)
+        
+        # Reflect the shell's velocity across the ground's normal
+        self.velocity = self.velocity.reflect(normal)
+        
+        # Apply energy loss (restitution/bounciness)
+        bounciness = 0.67 # Adjust this (0.0 to 1.0) to make it more/less bouncy
+        self.velocity *= bounciness
+        
         self.bounces_left -= 1
 
     def check_collision(self, terrain, tanks):
