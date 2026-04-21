@@ -1,8 +1,18 @@
-import pygame, random
+import math, pygame, random
 from settings import *
 from tank    import Tank
 from terrain import Terrain
 from particle import Particle
+from ai      import create_ai
+
+
+_MODES = [
+    ("PvP",    None),       # None = no AI
+    ("Easy",   "easy"),
+    ("Medium", "medium"),
+    ("Hard",   "hard"),
+]
+
 
 class Game:
     def __init__(self, screen):
@@ -17,7 +27,34 @@ class Game:
         self.active_shells = []
         self.particles     = []
         self.player_list   = []
+        self.restart_button_rect = pygame.Rect(SCREEN_WIDTH - 150, 10, 140, 38)
+        self.shell_menu_open = False
+        self.shell_menu_button_rect = pygame.Rect(0, 0, 0, 0)
+        self.shell_menu_item_rects = []
+
+        # AI state
+        self.ai_controller = None   # None in PvP
+        self.ai_difficulty = None   # "easy" | "medium" | "hard" | None
+        self.ai_turn_active = False
+
+        # Mode-selection button rects (built in _build_mode_buttons)
+        self._mode_button_rects = []   # list of (label, difficulty, rect)
+        self._build_mode_buttons()
+
         self._setup_players()
+
+    def _build_mode_buttons(self):
+        """Pre-calculate the four mode-selection button rects."""
+        btn_w, btn_h = 200, 56
+        gap          = 20
+        total_w      = len(_MODES) * btn_w + (len(_MODES) - 1) * gap
+        start_x      = SCREEN_WIDTH  // 2 - total_w // 2
+        btn_y        = SCREEN_HEIGHT // 2 + 20
+
+        self._mode_button_rects = []
+        for i, (label, diff) in enumerate(_MODES):
+            rect = pygame.Rect(start_x + i * (btn_w + gap), btn_y, btn_w, btn_h)
+            self._mode_button_rects.append((label, diff, rect))
 
     def _random_wind(self):
         return random.uniform(-WIND_MAX, WIND_MAX)
@@ -31,12 +68,17 @@ class Game:
         self.current_turn_index = 0
         self.active_shells = []
         self.particles     = []
+        self.shell_menu_open = False
+        self.shell_menu_item_rects = []
+        self.ai_controller  = None
+        self.ai_difficulty  = None
+        self.ai_turn_active = False
         self._setup_players()
 
     def _setup_players(self):
         y1 = self.terrain.get_y_at(200) - TANK_HEIGHT / 2
         y2 = self.terrain.get_y_at(SCREEN_WIDTH - 200) - TANK_HEIGHT / 2
-        red_tank = Tank(200,              y1, player_id=1, color=RED)
+        red_tank  = Tank(200,              y1, player_id=1, color=RED)
         blue_tank = Tank(SCREEN_WIDTH-200, y2, player_id=2, color=BLUE)
         blue_tank.facing_left = True
         self.player_list = [red_tank, blue_tank]
@@ -46,11 +88,19 @@ class Game:
         return self.player_list[self.current_turn_index]
 
     def next_turn(self):
+        self.shell_menu_open = False
         self.current_turn_index = (self.current_turn_index + 1) % len(self.player_list)
         if self.current_turn_index == 0:
             self.rounds += 1
             self._refuel_tanks()
             self.wind = self._random_wind()
+
+        # If it's now the AI's turn, start a fresh AI phase
+        if self.ai_controller and self.current_turn_index == 1:
+            self.ai_controller.reset()
+            self.ai_turn_active = True
+        else:
+            self.ai_turn_active = False
 
     def _refuel_tanks(self):
         for tank in self.player_list:
@@ -60,6 +110,18 @@ class Game:
     def _explode(self, shell):
         for _ in range(shell.particle_count):
             self.particles.append(Particle(shell.pos, shell.particle_color))
+
+    def _apply_explosion_damage(self, shell):
+        for tank in self.player_list:
+            if not tank.is_alive:
+                continue
+            tank_center = pygame.Vector2(tank.rect.center)
+            distance = tank_center.distance_to(shell.pos)
+            if distance > shell.explosion_radius:
+                continue
+            damage_ratio = max(0.0, 1.0 - (distance / shell.explosion_radius))
+            damage = shell.damage * damage_ratio
+            tank.take_dmg(damage)
 
     def run(self):
         while True:
@@ -77,40 +139,68 @@ class Game:
 
     def _handle_input(self, event):
         if self.game_state == "main_menu":
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                for label, diff, rect in self._mode_button_rects:
+                    if rect.collidepoint(event.pos):
+                        self._start_game(diff)
+                        return
+            # Legacy keyboard start – defaults to PvP
             if event.type == pygame.KEYDOWN and event.key == pygame.K_RETURN:
-                self.game_state = "playing"
+                self._start_game(None)
             return
 
         if self.game_state == "game_over":
-            if event.type == pygame.KEYDOWN and event.key == pygame.K_RETURN:
-                self.reset()
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                if self.restart_button_rect.collidepoint(event.pos):
+                    self.reset()
             return
 
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            if self.restart_button_rect.collidepoint(event.pos):
+                self.reset()
+                return
+
+            if self.game_state == "playing" and not self.ai_turn_active:
+                if self.shell_menu_button_rect.collidepoint(event.pos):
+                    self.shell_menu_open = not self.shell_menu_open
+                    return
+
+                if self.shell_menu_open:
+                    if self._handle_shell_menu_click(event.pos):
+                        return
+                    self.shell_menu_open = False
+
         if event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_SPACE and not self.active_shells:
+            if (event.key == pygame.K_SPACE
+                    and not self.active_shells
+                    and not self.ai_turn_active):
                 new_shells = self.current_tank.shoot()
                 self.active_shells.extend(new_shells)
                 self.next_turn()
 
-            if event.key == pygame.K_1:
-                self.current_tank.current_shell = "standard"
-            elif event.key == pygame.K_2:
-                self.current_tank.current_shell = "splash"
-            elif event.key == pygame.K_3:
-                self.current_tank.current_shell = "shotgun"
-            elif event.key == pygame.K_4:
-                self.current_tank.current_shell = "nuke"
-            elif event.key == pygame.K_5:
-                self.current_tank.current_shell = "bouncy"
+    def _start_game(self, difficulty):
+        """Begin a game with the selected mode."""
+        self.ai_difficulty = difficulty
+        if difficulty is not None:
+            self.ai_controller = create_ai(difficulty)
+            # Player 1 always goes first; AI is player 2 (index 1)
+            self.ai_turn_active = False
+        else:
+            self.ai_controller  = None
+            self.ai_turn_active = False
+        self.game_state = "playing"
 
     def _handle_held_keys(self, dt):
+        if self.active_shells or self.ai_turn_active:
+            return
+
         pressed = pygame.key.get_pressed()
         tank = self.current_tank
 
         if pressed[pygame.K_LEFT]:
-            tank.move(-1, dt)
+            tank.move(-1, dt, self.terrain)
         if pressed[pygame.K_RIGHT]:
-            tank.move(1, dt)
+            tank.move(1, dt, self.terrain)
         if pressed[pygame.K_UP]:
             tank.angle = min(90, tank.angle + 120 * dt)
         if pressed[pygame.K_DOWN]:
@@ -120,11 +210,33 @@ class Game:
         if pressed[pygame.K_s]:
             tank.power = max(0, tank.power - 1)
 
+    def _update_ai(self, dt):
+        """Drive the AI controller for one frame while it's the AI's turn."""
+        if not self.ai_turn_active or self.active_shells:
+            return
+
+        ai_tank    = self.player_list[1]
+        human_tank = self.player_list[0]
+
+        if not ai_tank.is_alive:
+            self.ai_turn_active = False
+            return
+
+        done = self.ai_controller.update(
+            ai_tank, human_tank, self.terrain, self.wind, dt
+        )
+        if done:
+            new_shells = ai_tank.shoot()
+            self.active_shells.extend(new_shells)
+            self.ai_turn_active = False
+            self.next_turn()
+
     def update(self, dt):
         if self.game_state != "playing":
             return
 
         self._handle_held_keys(dt)
+        self._update_ai(dt)
 
         for tank in self.player_list:
             tank.update(self.terrain, dt)
@@ -137,19 +249,13 @@ class Game:
                 continue
 
             result = shell.check_collision(self.terrain, self.player_list)
-            if result == "terrain":
+            if result in ("terrain", "tank"):
                 self.terrain.destroy(shell.pos, shell.explosion_radius)
                 self._explode(shell)
-            elif result == "tank":
-                for tank in self.player_list:
-                    if tank.rect.collidepoint(shell.pos):
-                        tank.take_dmg(shell.damage)
-                self.terrain.destroy(shell.pos, shell.explosion_radius)
-                self._explode(shell)
+                self._apply_explosion_damage(shell)
 
         self.active_shells = [s for s in self.active_shells if s.is_active]
 
-        # Check win condition
         alive = [t for t in self.player_list if t.is_alive]
         if len(alive) == 1:
             self.game_state = "game_over"
@@ -162,9 +268,7 @@ class Game:
         self.screen.fill(SKY_BLUE)
 
         if self.game_state == "main_menu":
-            font = pygame.font.SysFont(None, 72)
-            txt  = font.render("TANKHELL  —  Press ENTER", True, WHITE)
-            self.screen.blit(txt, (SCREEN_WIDTH//2 - txt.get_width()//2, 300))
+            self._draw_main_menu()
 
         elif self.game_state in ("playing", "game_over"):
             self.terrain.draw(self.screen)
@@ -179,6 +283,7 @@ class Game:
             for shell in self.active_shells:
                 shell.draw(self.screen)
             self._draw_ui()
+            self._draw_restart_button()
 
         if self.game_state == "game_over":
             font = pygame.font.SysFont(None, 72)
@@ -187,7 +292,64 @@ class Game:
 
         pygame.display.flip()
 
+    def _draw_main_menu(self):
+        """Render the main-menu screen with four mode buttons."""
+        # Title
+        font_big = pygame.font.SysFont(None, 80)
+        title = font_big.render("TANKHELL", True, WHITE)
+        self.screen.blit(title, (SCREEN_WIDTH//2 - title.get_width()//2, 160))
+
+        font_sub = pygame.font.SysFont(None, 36)
+        sub = font_sub.render("Choose a game mode to start", True, (200, 220, 255))
+        self.screen.blit(sub, (SCREEN_WIDTH//2 - sub.get_width()//2, 255))
+
+        font_btn = pygame.font.SysFont(None, 38)
+        mouse_pos = pygame.mouse.get_pos()
+
+        # Colour palette for each mode
+        colours = {
+            "PvP":    ((80,  130, 200), (60,  110, 180)),
+            "Easy":   ((60,  160,  70), (40,  130,  50)),
+            "Medium": ((200, 150,  30), (170, 120,  20)),
+            "Hard":   ((190,  50,  50), (160,  30,  30)),
+        }
+
+        for label, diff, rect in self._mode_button_rects:
+            base, hover = colours.get(label, ((100,100,100),(80,80,80)))
+            col = hover if rect.collidepoint(mouse_pos) else base
+            pygame.draw.rect(self.screen, col,    rect, border_radius=10)
+            pygame.draw.rect(self.screen, WHITE,  rect, 2, border_radius=10)
+
+            txt = font_btn.render(label, True, WHITE)
+            self.screen.blit(txt, txt.get_rect(center=rect.center))
+
+            # Sub-label
+            font_small = pygame.font.SysFont(None, 24)
+            sublabels = {
+                "PvP":    "2 Players",
+                "Easy":   "50% hit rate",
+                "Medium": "75% hit rate",
+                "Hard":   "100% hit rate",
+            }
+            stxt = font_small.render(sublabels.get(label, ""), True, (220,220,220))
+            self.screen.blit(stxt, stxt.get_rect(
+                centerx=rect.centerx, top=rect.bottom + 6))
+
+        # Controls hint
+        font_hint = pygame.font.SysFont(None, 26)
+        hints = [
+            "Left / Right : Move    Up / Down : Aim angle    W / S : Power    SPACE : Fire",
+            "Shell selector: click the shell button on your HUD panel",
+        ]
+        for i, h in enumerate(hints):
+            ht = font_hint.render(h, True, (180, 200, 230))
+            self.screen.blit(ht, (SCREEN_WIDTH//2 - ht.get_width()//2,
+                                  SCREEN_HEIGHT - 80 + i * 28))
+
     def _draw_aim_line(self, tank):
+        # Don't show aim line during AI move phase (looks weird)
+        if self.ai_turn_active:
+            return
         points = tank.get_aim_points(self.wind, steps=80, dt=0.04)
         max_points = max(1, len(points) - 1)
         for idx, point in enumerate(points):
@@ -213,7 +375,12 @@ class Game:
             self.screen.blit(panel_surf, (panel_x, panel_y))
             pygame.draw.rect(self.screen, BLACK, (panel_x, panel_y, panel_w, panel_h), 2)
 
-            title_txt = font.render(f"Player {tank.player_id}", True, WHITE)
+            # Label: show "AI (Easy/Medium/Hard)" for player 2 when in AI mode
+            if i == 1 and self.ai_difficulty:
+                label = f"AI ({self.ai_difficulty.capitalize()})"
+            else:
+                label = f"Player {tank.player_id}"
+            title_txt = font.render(label, True, WHITE)
             self.screen.blit(title_txt, (panel_x + 10, panel_y + 10))
 
             bar_x = panel_x + 10
@@ -221,31 +388,116 @@ class Game:
             bar_w = panel_w - 20
             bar_h = 18
             pygame.draw.rect(self.screen, BLACK, (bar_x - 2, bar_y - 2, bar_w + 4, bar_h + 4), 2)
-            pygame.draw.rect(self.screen, tank.color, (bar_x, bar_y, int(bar_w * tank.health / TANK_MAX_HEALTH), bar_h))
+            pygame.draw.rect(self.screen, tank.color,
+                             (bar_x, bar_y, int(bar_w * tank.health / TANK_MAX_HEALTH), bar_h))
             hp_txt = font.render(f"HP: {int(tank.health)}", True, WHITE)
             self.screen.blit(hp_txt, (bar_x, bar_y + bar_h + 6))
 
             angle_txt = font.render(f"Angle: {int(tank.angle)}°", True, WHITE)
             power_txt = font.render(f"Power: {int(tank.power)} / {TANK_MAX_POWER}", True, WHITE)
-            fuel_txt = font.render(f"Fuel: {int(tank.oil)}", True, WHITE)
+            fuel_txt  = font.render(f"Fuel: {int((tank.oil/TANK_MAX_OIL)*100)}%", True, WHITE)
             shell_count = tank.shell_list.get(tank.current_shell, 0)
-            shell_txt = font.render(
-                f"Shell: {tank.current_shell} ({shell_count})",
-                True, WHITE
-            )
+            shell_label = f"{tank.current_shell} ({shell_count})"
+            shell_txt   = font.render(f"Shell: {shell_label}", True, WHITE)
 
             self.screen.blit(angle_txt, (panel_x + 10, panel_y + 100))
             self.screen.blit(power_txt, (panel_x + 10, panel_y + 100 + 28))
-            self.screen.blit(fuel_txt, (panel_x + 140, panel_y + 100))
-            self.screen.blit(shell_txt, (panel_x + 10, panel_y + 100 + (28*2)))
+            self.screen.blit(fuel_txt,  (panel_x + 140, panel_y + 100))
 
-        # Show whose turn it is
-        turn_txt = font.render(f"Player {self.current_tank.player_id}'s Turn", True, WHITE)
+            if tank is self.current_tank and not self.ai_turn_active:
+                self.shell_menu_button_rect = pygame.Rect(
+                    panel_x + 10,
+                    panel_y + 100 + (28 * 2),
+                    shell_txt.get_width() + 16,
+                    shell_txt.get_height() + 12,
+                )
+                pygame.draw.rect(self.screen, GRAY, self.shell_menu_button_rect)
+                pygame.draw.rect(self.screen, BLACK, self.shell_menu_button_rect, 2)
+                self.screen.blit(shell_txt,
+                                 (self.shell_menu_button_rect.x + 8,
+                                  self.shell_menu_button_rect.y + 6))
+                if self.shell_menu_open and self.game_state == "playing":
+                    self._draw_shell_menu(font)
+            else:
+                self.screen.blit(shell_txt, (panel_x + 10, panel_y + 100 + (28 * 2)))
+
+        # Whose turn it is
+        if self.ai_turn_active:
+            turn_label = f"AI ({self.ai_difficulty.capitalize()}) is thinking…"
+        else:
+            turn_label = f"Player {self.current_tank.player_id}'s Turn"
+        turn_txt    = font.render(turn_label, True, WHITE)
         wind_symbol = "<-" if self.wind < 0 else "->" if self.wind > 0 else "--"
-        wind_txt = font.render(f"Wind {wind_symbol} {abs(self.wind):.1f}", True, WHITE)
+        wind_txt    = font.render(f"Wind {wind_symbol} {abs(self.wind):.1f}", True, WHITE)
         self.screen.blit(turn_txt, (SCREEN_WIDTH//2 - turn_txt.get_width()//2, 10))
         self.screen.blit(wind_txt, (SCREEN_WIDTH//2 - wind_txt.get_width()//2, 40))
+
+    def _handle_shell_menu_click(self, pos):
+        for shell_name, rect in self.shell_menu_item_rects:
+            if rect.collidepoint(pos):
+                count = self.current_tank.shell_list.get(shell_name, 0)
+                if count > 0 or (shell_name == "standard" and all(c <= 0 for c in self.current_tank.shell_list.values())):
+                    self.current_tank.current_shell = shell_name
+                    self.shell_menu_open = False
+                    return True
+        return False
+
+    def _draw_shell_menu(self, font):
+        shell_names = list(self.current_tank.shell_list.keys())
+        rows    = min(3, len(shell_names))
+        columns = max(1, (len(shell_names) + rows - 1) // rows)
+
+        item_w = 140
+        item_h = 28
+        gap    = 8
+        menu_width  = columns * item_w + (columns + 1) * gap
+        menu_height = rows    * item_h + (rows    + 1) * gap
+
+        menu_x = self.shell_menu_button_rect.left
+        menu_y = self.shell_menu_button_rect.bottom + 6
+
+        if menu_x + menu_width > SCREEN_WIDTH - 10:
+            menu_x = SCREEN_WIDTH - menu_width - 10
+        if menu_y + menu_height > SCREEN_HEIGHT - 10:
+            menu_y = self.shell_menu_button_rect.top - 6 - menu_height
+
+        pygame.draw.rect(self.screen, (50, 50, 50), (menu_x, menu_y, menu_width, menu_height))
+        pygame.draw.rect(self.screen, WHITE,        (menu_x, menu_y, menu_width, menu_height), 2)
+
+        self.shell_menu_item_rects = []
+        for idx, shell_name in enumerate(shell_names):
+            row  = idx % rows
+            col  = idx // rows
+            item_x = menu_x + gap + col * (item_w + gap)
+            item_y = menu_y + gap + row * (item_h + gap)
+            rect = pygame.Rect(item_x, item_y, item_w, item_h)
+
+            count        = self.current_tank.shell_list.get(shell_name, 0)
+            fill_color   = (90, 90, 90) if shell_name == self.current_tank.current_shell else (70, 70, 70)
+            text_color   = WHITE if count > 0 else (180, 180, 180)
+            border_color = YELLOW if shell_name == self.current_tank.current_shell else BLACK
+
+            pygame.draw.rect(self.screen, fill_color,   rect)
+            pygame.draw.rect(self.screen, border_color, rect, 2)
+            item_txt = font.render(f"{shell_name} ({count})", True, text_color)
+            self.screen.blit(item_txt, (rect.x + 8, rect.y + 4))
+            self.shell_menu_item_rects.append((shell_name, rect))
+
+    def _draw_restart_button(self):
+        font = pygame.font.SysFont(None, 28)
+        pygame.draw.rect(self.screen, RED,  self.restart_button_rect)
+        pygame.draw.rect(self.screen, GRAY, self.restart_button_rect, 2)
+        txt = font.render("Restart", True, WHITE)
+        txt_pos = txt.get_rect(center=self.restart_button_rect.center)
+        self.screen.blit(txt, txt_pos)
 
     def quit_game(self):
         pygame.quit()
         raise SystemExit
+
+if __name__ == "__main__":
+    pygame.init()
+    screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
+    pygame.display.set_caption(TITLE)
+    game = Game(screen)
+    game.run()

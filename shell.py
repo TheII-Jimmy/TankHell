@@ -14,7 +14,7 @@ class Shell:
         self.explosion_radius = stats["radius"]
         self.wind_resistance  = stats["wind_resistance"]
         self.damage_falloff   = 0.5
-        self.gravity          = SHELL_GRAVITY
+        self.gravity          = SHELL_GRAVITY * stats.get("gravity_multiplier", 1.0)
         self.timer            = 0.0
         self.bounces_left     = stats.get("bounce", 0)
         self.particle_count   = stats.get("particle_count", 25)
@@ -27,7 +27,7 @@ class Shell:
 
         # Physics: convert angle + power into a velocity vector
         rad = math.radians(angle)
-        speed = power * 15.0
+        speed = power * 10.0 * stats.get("speed_multiplier", 1.0)
         self.velocity = pygame.Vector2(
             math.cos(rad) * speed,
            -math.sin(rad) * speed   # negative because y-axis is flipped
@@ -87,10 +87,11 @@ class Shell:
             if idx % 2 != 0:
                 continue
             fade = 1.0 - (age / self.trail_duration)
-            alpha = max(30, int(255 * fade))
+            alpha = max(80, int(255 * fade))
             radius = 2
+            r, g, b = self.trail_color 
             trail_surf = pygame.Surface((radius * 2 + 2, radius * 2 + 2), pygame.SRCALPHA)
-            pygame.draw.circle(trail_surf, (255, 255, 255, alpha), (radius + 1, radius + 1), radius)
+            pygame.draw.circle(trail_surf, (r, g, b, alpha), (radius + 1, radius + 1), radius)
             surface.blit(trail_surf, (int(pos.x) - radius - 1, int(pos.y) - radius - 1))
 
         pygame.draw.circle(surface, self.trail_color,

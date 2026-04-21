@@ -25,10 +25,15 @@ class Tank:
         self.current_shell = "standard"
         self.shell_list = {
             "standard": 5,
-            "splash": 5,
+            "splash": 4,
             "shotgun": 3,
-            "nuke": 2,
-            "bouncy": 3,
+            "nuke": 1,
+            "bouncy": 2,
+            "triple_bounce": 2,
+            "lazer": 3,
+            "crazy_cluster": 2,
+            "explosive": 2,
+            "rapid": 3,
         }
         self.vel_y      = 0.0
         self.on_ground  = False
@@ -120,17 +125,36 @@ class Tank:
             self.health = 0
             self.is_alive = False
 
-    def move(self, direction, dt):
+    def move(self, direction, dt, terrain=None):
         # direction: -1 = left, 1 = right
-        if self.oil > 0:
-            self.prev_pos = pygame.Vector2(self.pos)
-            dist = TANK_MOVE_SPEED * dt
-            self.pos.x += direction * dist
-            self.oil = max(0, self.oil - dist)
-            self.movedistance += abs(dist)
-            self.facing_left = (direction == -1)
-        else:
-            self.facing_left = (direction == -1)
+        self.facing_left = (direction == -1)
+        if self.oil <= 0:
+            return
+
+        self.prev_pos = pygame.Vector2(self.pos)
+        dist = TANK_MOVE_SPEED * dt
+        target_x = self.pos.x + direction * dist
+        half_width = self.width / 2
+        clamped_x = max(half_width, min(target_x, SCREEN_WIDTH - half_width))
+        movement = clamped_x - self.pos.x
+
+        if abs(movement) < 1e-4:
+            return
+
+        if terrain is not None:
+            current_x = max(0, min(int(self.pos.x), terrain.width - 1))
+            next_x = max(0, min(int(clamped_x), terrain.width - 1))
+            current_y = terrain.get_y_at(current_x)
+            next_y = terrain.get_y_at(next_x)
+
+            max_climb = 20
+            if current_y - next_y > max_climb:
+                return
+
+        self.pos.x = clamped_x
+        moved = abs(self.pos.x - self.prev_pos.x)
+        self.oil = max(0, self.oil - moved)
+        self.movedistance += moved
 
     def _get_shell_spawn_pos(self):
         pivot = pygame.Vector2(self.barrel_pivot)
@@ -145,17 +169,23 @@ class Tank:
         return pivot_pos + direction * (self.barrel_length + 10)
 
     def get_aim_points(self, wind=0.0, steps=80, dt=0.04):
+        stats = SHELLS.get(self.current_shell, SHELLS["standard"])
+        speed_multiplier = stats.get("speed_multiplier", 1.0)
+        gravity_multiplier = stats.get("gravity_multiplier", 1.0)
+        wind_resistance = stats.get("wind_resistance", 1.0)
+
         start = self._get_shell_spawn_pos()
         shell_angle = self.angle if not self.facing_left else 180 - self.angle
         rad = math.radians(shell_angle)
-        velocity = pygame.Vector2(math.cos(rad), -math.sin(rad)) * (self.power * 15.0)
+        speed = self.power * 10.0 * speed_multiplier
+        velocity = pygame.Vector2(math.cos(rad), -math.sin(rad)) * speed
         position = pygame.Vector2(start)
         points = []
 
         for i in range(steps):
             points.append(pygame.Vector2(position))
-            velocity.y += SHELL_GRAVITY * dt
-            velocity.x += wind * dt
+            velocity.y += SHELL_GRAVITY * gravity_multiplier * dt
+            velocity.x += wind * wind_resistance * dt
             position += velocity * dt
             if position.y > SCREEN_HEIGHT:
                 break
@@ -163,13 +193,14 @@ class Tank:
 
     def shoot(self):
         from shell import Shell
+
+        # If the selected shell is out of ammo, use standard instead.
+        if self.shell_list.get(self.current_shell, 0) <= 0:
+            self.current_shell = "standard"
+
         stats = SHELLS.get(self.current_shell, SHELLS["standard"])
         count = stats.get("shell_count", 1)
         spread = stats.get("spread", 0)
-
-        # If the selected shell is out of ammo, fallback to standard.
-        if self.shell_list.get(self.current_shell, 0) <= 0:
-            self.current_shell = "standard"
 
         self.shell_list[self.current_shell] = max(
             0, self.shell_list.get(self.current_shell, 0) - 1

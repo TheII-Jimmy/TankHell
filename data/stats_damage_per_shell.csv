@@ -1,0 +1,13 @@
+game_number,shell_type,damage_dealt
+1,standard,24.12
+1,shotgun,1.67
+1,crazy_cluster,11.14
+1,bouncy,33.74
+1,explosive,55.09
+1,rapid,29.75
+2,standard,24.12
+2,shotgun,1.67
+2,crazy_cluster,11.14
+2,bouncy,33.74
+2,explosive,55.09
+2,rapid,29.75

@@ -14,6 +14,7 @@ RED   = (200, 50, 50)
 GREEN = (50, 180, 50)
 SKY_BLUE = (100, 160, 220)
 BROWN = (69, 42, 6)
+GRAY = (70, 70, 70)
 
 # Tank settings
 TANK_WIDTH      = 54
@@ -43,8 +44,8 @@ SHELLS = {
         "trail_color": BLACK,
     },
     "splash": {
-        "damage": 20,
-        "radius": 80,
+        "damage": 30,
+        "radius": 90,
         "wind_resistance": 0.8,
         "bounce": 0,
         "shell_count": 1,
@@ -54,7 +55,7 @@ SHELLS = {
         "trail_color": BLACK,
     },
     "shotgun": {
-        "damage": 15,
+        "damage": 25,
         "radius": 25,
         "wind_resistance": 1.2,
         "bounce": 0,
@@ -63,9 +64,11 @@ SHELLS = {
         "particle_count": 20,
         "particle_color": YELLOW,
         "trail_color": BLACK,
+        "speed_multiplier": 0.9,
+        "gravity_mulltiplier": 1.1
     },
     "nuke": {
-        "damage": 80,
+        "damage": 50,
         "radius": 120,
         "wind_resistance": 0.6,
         "bounce": 0,
@@ -74,9 +77,11 @@ SHELLS = {
         "particle_count": 80,
         "particle_color": ORANGE,
         "trail_color": ORANGE,
+        "speed_multiplier": 0.75,
+        "gravity_multiplier": 1.2,
     },
     "bouncy": {
-        "damage": 25,
+        "damage": 35,
         "radius": 50,
         "wind_resistance": 0.9,
         "bounce": 2,
@@ -85,5 +90,63 @@ SHELLS = {
         "particle_count": 35,
         "particle_color": CYAN,
         "trail_color": CYAN,
+    },
+    "triple_bounce": {
+        "damage": 25,
+        "radius": 30,
+        "wind_resistance": 1.0,
+        "bounce": 3,
+        "shell_count": 3,
+        "spread": 10,
+        "particle_count": 30,
+        "particle_color": (4, 77, 14),
+        "trail_color": (4, 77, 14),
+    },
+    "lazer": {
+        "damage": 40,
+        "radius": 20,
+        "wind_resistance": 0.5,
+        "bounce": 0,
+        "shell_count": 1,
+        "spread": 0,
+        "particle_count": 10,
+        "particle_color": CYAN,
+        "trail_color": CYAN,
+        "speed_multiplier": 2.0,
+        "gravity_multiplier": 0.5,
+    },
+    "crazy_cluster": {
+        "damage": 15,
+        "radius": 25,
+        "wind_resistance": 1.0,
+        "bounce": 0,
+        "shell_count": 10,
+        "spread": 20,
+        "particle_count": 50,
+        "particle_color": ORANGE,
+        "trail_color": ORANGE,
+    },
+    "explosive": {
+        "damage": 60,
+        "radius": 100,
+        "wind_resistance": 0.7,
+        "bounce": 0,
+        "shell_count": 1,
+        "spread": 0,
+        "particle_count": 60,
+        "particle_color": RED,
+        "trail_color": BLACK,
+    },
+    "rapid": {
+        "damage": 20,
+        "radius": 25,
+        "wind_resistance": 1.0,
+        "bounce": 0,
+        "shell_count": 5,
+        "spread": 5,
+        "particle_count": 20,
+        "particle_color": YELLOW,
+        "trail_color": YELLOW,
+        "speed_multiplier": 1.5,
     },
 }
