@@ -1,13 +1,15 @@
-import math, pygame, random
+import math, pygame, random, sys
+import multiprocessing
 from settings import *
 from tank    import Tank
 from terrain import Terrain
 from particle import Particle
 from ai      import create_ai
+from stats   import record_match, open_stats_window
 
 
 _MODES = [
-    ("PvP",    None),       # None = no AI
+    ("PvP",    None),
     ("Easy",   "easy"),
     ("Medium", "medium"),
     ("Hard",   "hard"),
@@ -22,7 +24,7 @@ class Game:
         self.wind       = self._random_wind()
         self.rounds     = 0
         self.matchduration     = 0.0
-        self.game_state        = "main_menu"   # "playing" | "game_over"
+        self.game_state        = "main_menu"
         self.current_turn_index = 0
         self.active_shells = []
         self.particles     = []
@@ -32,19 +34,25 @@ class Game:
         self.shell_menu_button_rect = pygame.Rect(0, 0, 0, 0)
         self.shell_menu_item_rects = []
 
-        # AI state
-        self.ai_controller = None   # None in PvP
-        self.ai_difficulty = None   # "easy" | "medium" | "hard" | None
+        self.ai_controller = None
+        self.ai_difficulty = None
         self.ai_turn_active = False
 
-        # Mode-selection button rects (built in _build_mode_buttons)
-        self._mode_button_rects = []   # list of (label, difficulty, rect)
+        self._mode_button_rects = []
         self._build_mode_buttons()
+
+        self._stats_button_rect = pygame.Rect(
+            SCREEN_WIDTH // 2 - 100,
+            SCREEN_HEIGHT // 2 + 110,
+            200, 46,
+        )
+
+        self._shell_damage_log = {}
+        self._turn_start_time  = 0.0
 
         self._setup_players()
 
     def _build_mode_buttons(self):
-        """Pre-calculate the four mode-selection button rects."""
         btn_w, btn_h = 200, 56
         gap          = 20
         total_w      = len(_MODES) * btn_w + (len(_MODES) - 1) * gap
@@ -60,6 +68,7 @@ class Game:
         return random.uniform(-WIND_MAX, WIND_MAX)
 
     def reset(self):
+        self._save_stats()
         self.terrain    = Terrain()
         self.wind       = self._random_wind()
         self.rounds     = 0
@@ -73,6 +82,8 @@ class Game:
         self.ai_controller  = None
         self.ai_difficulty  = None
         self.ai_turn_active = False
+        self._shell_damage_log = {}
+        self._turn_start_time  = 0.0
         self._setup_players()
 
     def _setup_players(self):
@@ -88,6 +99,11 @@ class Game:
         return self.player_list[self.current_turn_index]
 
     def next_turn(self):
+        tank = self.current_tank
+        elapsed = self.matchduration - self._turn_start_time
+        tank.time_taken += elapsed
+        self._turn_start_time = self.matchduration
+
         self.shell_menu_open = False
         self.current_turn_index = (self.current_turn_index + 1) % len(self.player_list)
         if self.current_turn_index == 0:
@@ -95,7 +111,6 @@ class Game:
             self._refuel_tanks()
             self.wind = self._random_wind()
 
-        # If it's now the AI's turn, start a fresh AI phase
         if self.ai_controller and self.current_turn_index == 1:
             self.ai_controller.reset()
             self.ai_turn_active = True
@@ -123,6 +138,25 @@ class Game:
             damage = shell.damage * damage_ratio
             tank.take_dmg(damage)
 
+            if damage > 0:
+                shooter = next(
+                    (t for t in self.player_list if t.player_id == shell.owner_id), None
+                )
+                if shooter:
+                    shooter._shots_hit += 1
+
+                stype = shell.shell_type
+                self._shell_damage_log[stype] = (
+                    self._shell_damage_log.get(stype, 0.0) + damage
+                )
+
+    def _save_stats(self):
+        if self.game_state not in ("playing", "game_over"):
+            return
+        if all(t._shots_fired == 0 for t in self.player_list):
+            return
+        record_match(self.player_list, self.matchduration, self._shell_damage_log)
+
     def run(self):
         while True:
             dt_ms = self.clock.tick(FPS)
@@ -131,6 +165,7 @@ class Game:
 
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
+                    self._save_stats()
                     self.quit_game()
                 self._handle_input(event)
 
@@ -144,10 +179,12 @@ class Game:
                     if rect.collidepoint(event.pos):
                         self._start_game(diff)
                         return
-            # Legacy keyboard start – defaults to PvP
-            if event.type == pygame.KEYDOWN and event.key == pygame.K_RETURN:
-                self._start_game(None)
-            return
+                if self._stats_button_rect.collidepoint(event.pos):
+                    # Start the stats window in an independent process
+                    p = multiprocessing.Process(target=open_stats_window)
+                    p.daemon = True
+                    p.start()
+                    return
 
         if self.game_state == "game_over":
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
@@ -179,15 +216,15 @@ class Game:
                 self.next_turn()
 
     def _start_game(self, difficulty):
-        """Begin a game with the selected mode."""
         self.ai_difficulty = difficulty
         if difficulty is not None:
             self.ai_controller = create_ai(difficulty)
-            # Player 1 always goes first; AI is player 2 (index 1)
             self.ai_turn_active = False
         else:
             self.ai_controller  = None
             self.ai_turn_active = False
+        self._shell_damage_log = {}
+        self._turn_start_time  = self.matchduration
         self.game_state = "playing"
 
     def _handle_held_keys(self, dt):
@@ -211,7 +248,6 @@ class Game:
             tank.power = max(0, tank.power - 1)
 
     def _update_ai(self, dt):
-        """Drive the AI controller for one frame while it's the AI's turn."""
         if not self.ai_turn_active or self.active_shells:
             return
 
@@ -258,6 +294,7 @@ class Game:
 
         alive = [t for t in self.player_list if t.is_alive]
         if len(alive) == 1:
+            self._save_stats()
             self.game_state = "game_over"
 
         for p in self.particles:
@@ -293,8 +330,6 @@ class Game:
         pygame.display.flip()
 
     def _draw_main_menu(self):
-        """Render the main-menu screen with four mode buttons."""
-        # Title
         font_big = pygame.font.SysFont(None, 80)
         title = font_big.render("TANKHELL", True, WHITE)
         self.screen.blit(title, (SCREEN_WIDTH//2 - title.get_width()//2, 160))
@@ -306,7 +341,6 @@ class Game:
         font_btn = pygame.font.SysFont(None, 38)
         mouse_pos = pygame.mouse.get_pos()
 
-        # Colour palette for each mode
         colours = {
             "PvP":    ((80,  130, 200), (60,  110, 180)),
             "Easy":   ((60,  160,  70), (40,  130,  50)),
@@ -323,7 +357,6 @@ class Game:
             txt = font_btn.render(label, True, WHITE)
             self.screen.blit(txt, txt.get_rect(center=rect.center))
 
-            # Sub-label
             font_small = pygame.font.SysFont(None, 24)
             sublabels = {
                 "PvP":    "2 Players",
@@ -335,7 +368,12 @@ class Game:
             self.screen.blit(stxt, stxt.get_rect(
                 centerx=rect.centerx, top=rect.bottom + 6))
 
-        # Controls hint
+        s_hover = (80, 60, 160) if self._stats_button_rect.collidepoint(mouse_pos) else (60, 40, 140)
+        pygame.draw.rect(self.screen, s_hover, self._stats_button_rect, border_radius=10)
+        pygame.draw.rect(self.screen, WHITE,   self._stats_button_rect, 2, border_radius=10)
+        s_lbl = font_btn.render("Statistics", True, WHITE)
+        self.screen.blit(s_lbl, s_lbl.get_rect(center=self._stats_button_rect.center))
+
         font_hint = pygame.font.SysFont(None, 26)
         hints = [
             "Left / Right : Move    Up / Down : Aim angle    W / S : Power    SPACE : Fire",
@@ -347,7 +385,6 @@ class Game:
                                   SCREEN_HEIGHT - 80 + i * 28))
 
     def _draw_aim_line(self, tank):
-        # Don't show aim line during AI move phase (looks weird)
         if self.ai_turn_active:
             return
         points = tank.get_aim_points(self.wind, steps=80, dt=0.04)
@@ -375,7 +412,6 @@ class Game:
             self.screen.blit(panel_surf, (panel_x, panel_y))
             pygame.draw.rect(self.screen, BLACK, (panel_x, panel_y, panel_w, panel_h), 2)
 
-            # Label: show "AI (Easy/Medium/Hard)" for player 2 when in AI mode
             if i == 1 and self.ai_difficulty:
                 label = f"AI ({self.ai_difficulty.capitalize()})"
             else:
@@ -421,7 +457,6 @@ class Game:
             else:
                 self.screen.blit(shell_txt, (panel_x + 10, panel_y + 100 + (28 * 2)))
 
-        # Whose turn it is
         if self.ai_turn_active:
             turn_label = f"AI ({self.ai_difficulty.capitalize()}) is thinking…"
         else:
@@ -493,7 +528,9 @@ class Game:
 
     def quit_game(self):
         pygame.quit()
+        sys.exit()
         raise SystemExit
+
 
 if __name__ == "__main__":
     pygame.init()
