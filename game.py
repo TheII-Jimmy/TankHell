@@ -482,7 +482,7 @@ class Game:
         hints = [
             "Left / Right : Move    Up / Down : Aim angle    W / S : Power    SPACE : Fire",
             "Shell selector: click the shell button on your HUD panel",
-            "Activate Hell Bomb for automation",
+            "Activate 500kg Bomb for automation",
         ]
         for i, h in enumerate(hints):
             ht = font_hint.render(h, True, (180, 200, 230))
