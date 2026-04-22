@@ -185,7 +185,7 @@ class Tank:
         for i in range(steps):
             points.append(pygame.Vector2(position))
             velocity.y += SHELL_GRAVITY * gravity_multiplier * dt
-            velocity.x += wind * wind_resistance * dt
+            velocity.x += wind_resistance * dt
             position += velocity * dt
             if position.y > SCREEN_HEIGHT:
                 break

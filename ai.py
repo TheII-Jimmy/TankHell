@@ -21,7 +21,7 @@ def _simulate_shell(start_x, start_y, angle_deg, power, wind,
 
     for _ in range(max_steps):
         vy += grav * dt
-        vx += wind * wr * dt
+        vx += wind*25 * wr * dt
         x  += vx * dt
         y  += vy * dt
         if target_x is not None and target_y is not None:
@@ -40,8 +40,8 @@ def _solve_angle_and_power(src_x, src_y, tgt_x, tgt_y, wind,
     best_power = 50.0
     best_err   = float("inf")
 
-    for angle in range(5, 86, 2):        # 5° … 85° local angle
-        for power in range(20, 101, 5):
+    for angle in range(5, 86, 1):        # 5° … 85° local angle
+        for power in range(20, 101, 2):
             # Replicate exactly what tank.shoot() does when building the angle:
             # shell_angle = angle if not facing_left else 180 - angle
             world_angle = angle if not facing_left else 180 - angle

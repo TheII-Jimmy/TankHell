@@ -36,7 +36,7 @@ class Shell:
     def update(self, dt, wind=0.0):
         self.prev_pos = pygame.Vector2(self.pos)
         self.velocity.y += self.gravity * dt
-        self.velocity.x += wind * self.wind_resistance * dt
+        self.velocity.x += wind*25 * self.wind_resistance * dt
         self.pos += self.velocity * dt
         self.timer += dt
 
