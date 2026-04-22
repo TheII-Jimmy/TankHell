@@ -29,6 +29,14 @@ class Game:
         self.clock      = pygame.time.Clock()
         self.terrain    = Terrain()
         self.wind       = self._random_wind()
+
+        try:
+            self.shoot_sound = pygame.mixer.Sound("assets/tanks_shooting.wav")
+            self.shoot_sound.set_volume(0.75)
+        except FileNotFoundError:
+            print("Warning: Audio file 'assets/tanks_shooting.wav' not found.")
+            self.shoot_sound = None
+
         self.rounds     = 0
         self.matchduration     = 0.0
         self.game_state        = "main_menu"
@@ -277,6 +285,10 @@ class Game:
                         and not self.active_shells):
                     new_shells = self.current_tank.shoot()
                     self.active_shells.extend(new_shells)
+
+                    if self.shoot_sound:
+                        self.shoot_sound.play()
+
                     self.next_turn()
 
     def _start_game(self, difficulty):
@@ -341,6 +353,10 @@ class Game:
         if done:
             new_shells = ai_tank.shoot()
             self.active_shells.extend(new_shells)
+
+            if self.shoot_sound:
+                self.shoot_sound.play()
+
             self.ai_turn_active = False
             self.next_turn()
 
