@@ -101,7 +101,7 @@ Data accumulates across sessions, enabling cross-match trend analysis in the sta
 
 ## 6. Changed Proposed Features
 
-- **Scatter shell rework:** The scatter / crazy-cluster shell was originally intended to deploy sub-munitions that fall vertically from above the target. In the final implementation it fires multiple shells in a horizontal spread from the barrel instead, as the downward-drop variant required a separate shell lifecycle state machine that fell outside the project scope.
+- **Scatter shell rework:** The scatter / crazy-cluster shell was originally intended to deploy sub-munitions that fall vertically from above the target. In the final implementation it fires multiple shells in a horizontal spread from the barrel instead.
 
 ---
 
