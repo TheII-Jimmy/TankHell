@@ -746,3 +746,13 @@ game_number,shell_type,damage_dealt
 126,triple_bounce,16.87
 126,explosive,38.01
 126,splash,23.28
+127,nuke,37.94
+127,explosive,41.71
+127,rapid,34.85
+127,crazy_cluster,67.65
+127,standard,24.17
+128,shotgun,17.7
+128,bouncy,27.98
+128,triple_bounce,64.01
+128,nuke,46.98
+128,rapid,39.84
